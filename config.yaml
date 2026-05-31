@@ -19,11 +19,13 @@ paths:
 # --- Dataset ---
 dataset:
   name: C_NMC_2019
-  kaggle_id: "andrewmvd/leukemia-classification"   # Kaggle dataset slug (verify before use)
-  image_size: 224          # Resize target (H=W), pixels
-  val_split: 0.15          # Fraction of train set used for validation
-  test_split: 0.15         # Fraction held out as test (patient-level split)
-  patient_id_field: null   # Column/folder name that identifies the patient; set in Faz 1
+  kaggle_id: "andrewmvd/leukemia-classification"
+  image_size: 224          # Transfer learning modelleri için (AlexNet/VGG/ResNet girişi)
+  val_split: 0.15          # Test çıkarıldıktan sonraki verinin val oranı
+  test_split: 0.15         # Tüm verinin test oranı (hasta-bazlı ayrılır)
+  # Hasta ID parse kuralı: dosya adı stem'inden son 2 alt çizgi bölümü atılır.
+  # Örn: UID_H1_1_3 → UID_H1  |  Uygulayan: src/data/explore.py::parse_patient_id()
+  patient_id_field: "filename_prefix"
 
 # --- Training ---
 training:
