@@ -3,16 +3,17 @@ train.py — Tüm 5 modelin eğitim + test değerlendirme orkestratörü.
 
 CLI:
     python -m src.train --model all        [--config config.yaml] [--smoke-test]
-    python -m src.train --model resnet50   [--config config.yaml] [--smoke-test]
-    python -m src.train --model baseline   [--smoke-test]
+    python -m src.train --model resnet50   [--output-dir /drive/MyDrive/exp]
+    python -m src.train --model baseline   [--skip-if-done] [--smoke-test]
 
-Çıktılar: experiments/{model_name}/ altında
-    metrics.json, predictions.csv, run_info.json,
-    confusion_matrix.png, roc_curve.png
-    + derin modeller: weights.pth, weights_last.pth,
-                      training_history.csv, training_history.png
-    + klasik modeller: model.joblib
-    + özellik cache: experiments/features/{model}_{split}.npz
+Çıktı kökü (öncelik sırası):
+    1. --output-dir CLI argümanı
+    2. config.phase2.output_dir
+    3. config.paths.experiments
+
+Alt dizinler:
+    {output_dir}/{model_name}/   — metrik, ağırlık, görsel, run_info
+    {output_dir}/features/       — özellik cache (.npz)
 """
 
 import argparse
@@ -58,16 +59,77 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 CLASSICAL = {"baseline", "classical_ml"}
 DEEP      = {"alexnet", "vgg16", "resnet50"}
+SMOKE_N   = {"train": 40, "val": 20, "test": 20}
 
-SMOKE_N = {"train": 40, "val": 20, "test": 20}
+# Beklenen çıktı dosyaları (doğrulama için)
+_COMMON_FILES = ["metrics.json", "predictions.csv",
+                 "confusion_matrix.png", "roc_curve.png", "run_info.json"]
+_CLASSICAL_EXTRA = ["model.joblib"]
+_DEEP_EXTRA      = ["weights.pth", "training_history.csv", "training_history.png"]
 
 
 # ---------------------------------------------------------------------------
-# Yardımcı fonksiyonlar
+# Output dizini çözümleme
+# ---------------------------------------------------------------------------
+
+def resolve_output_dir(cli_output_dir: str | None, cfg: dict) -> Path:
+    """
+    Çıktı kök dizinini şu öncelik sırmasıyla çöz:
+        CLI --output-dir  >  config.phase2.output_dir  >  config.paths.experiments
+    """
+    if cli_output_dir:
+        return Path(cli_output_dir)
+    p2 = cfg.get("phase2", {})
+    return Path(p2.get("output_dir", cfg["paths"]["experiments"]))
+
+
+# ---------------------------------------------------------------------------
+# Kayıt doğrulama
+# ---------------------------------------------------------------------------
+
+def verify_outputs(model_name: str, exp_dir: Path, is_deep: bool) -> None:
+    """
+    Eğitim sonrası beklenen tüm dosyaların disk üzerinde var ve sıfırdan büyük
+    olduğunu doğrula. Eksik dosya varsa RuntimeError fırlatır.
+
+    Girdi : model_name, exp_dir (models output klasörü), is_deep (DL mi?)
+    """
+    expected = _COMMON_FILES + (_DEEP_EXTRA if is_deep else _CLASSICAL_EXTRA)
+    sep = "-" * 72
+
+    print(f"\n{sep}")
+    print(f"  KAYIT DOGRULAMA: {model_name}")
+    print(f"  Klasor: {exp_dir.resolve()}")
+    print(sep)
+
+    missing = []
+    for fname in expected:
+        fpath = exp_dir / fname
+        if fpath.exists() and fpath.stat().st_size > 0:
+            size_kb = fpath.stat().st_size / 1024
+            print(f"  [OK]  {fpath.resolve()}  ({size_kb:>10.1f} KB)")
+        else:
+            tag = "BOS DOSYA" if fpath.exists() else "EKSIK"
+            print(f"  [!!]  {fpath.resolve()}  -- {tag}")
+            missing.append(str(fpath.resolve()))
+
+    n_ok = len(expected) - len(missing)
+    print(sep)
+    print(f"  {n_ok}/{len(expected)} dosya tamam.")
+    print(sep + "\n")
+
+    if missing:
+        raise RuntimeError(
+            f"KAYIT EKSIK — {model_name} icin su dosyalar bulunamadi:\n" +
+            "\n".join(f"  * {f}" for f in missing)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Genel yardımcılar
 # ---------------------------------------------------------------------------
 
 def _set_seed(seed: int) -> None:
-    """numpy, random ve torch tohumlarını eş zamanlı sabitle."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -76,7 +138,6 @@ def _set_seed(seed: int) -> None:
 
 
 def _real_data_ok(proc_dir: Path) -> bool:
-    """Gerçek veri var ve ilk görüntü erişilebilir mi?"""
     csv = proc_dir / "train.csv"
     if not csv.exists():
         return False
@@ -90,9 +151,7 @@ def _real_data_ok(proc_dir: Path) -> bool:
 class _SmokeContext:
     """
     Smoke test için geçici sentetik veri yöneticisi.
-
-    Gerçek veri varsa proc_dir'i aynen döndürür (subsample train.py'de yapılır).
-    Yoksa 64×64 rastgele PNG + CSV üretir; çıkışta temizler.
+    Gerçek veri varsa proc_dir aynen döner; yoksa 64×64 PNG + CSV üretir.
     """
 
     def __init__(self, proc_dir: Path):
@@ -104,7 +163,7 @@ class _SmokeContext:
         if _real_data_ok(self._real):
             return self._real
 
-        from PIL import Image as PILImage  # lazy import
+        from PIL import Image as PILImage
 
         self._tmp_imgs = Path(tempfile.mkdtemp(prefix="all_smoke_imgs_"))
         self._tmp_proc = Path(tempfile.mkdtemp(prefix="all_smoke_proc_"))
@@ -121,7 +180,7 @@ class _SmokeContext:
                              "patient_id": f"P{i // 4:03d}", "fold": "f1"})
             pd.DataFrame(rows).to_csv(self._tmp_proc / f"{split}.csv", index=False)
 
-        log.warning("Gerçek veri yok — sentetik smoke verisi: %s", self._tmp_proc)
+        log.warning("Gercek veri yok — sentetik smoke verisi: %s", self._tmp_proc)
         return self._tmp_proc
 
     def __exit__(self, *args) -> None:
@@ -131,7 +190,6 @@ class _SmokeContext:
 
 
 def _class_weights(labels) -> np.ndarray:
-    """Ters-frekans sınıf ağırlıkları: shape (2,), idx 0=HEM, 1=ALL."""
     return compute_class_weight("balanced", classes=np.array([0, 1]),
                                 y=np.array(labels))
 
@@ -139,29 +197,29 @@ def _class_weights(labels) -> np.ndarray:
 def _build_run_info(model_name: str, cfg: dict, p2: dict, device: torch.device,
                     train_time: float, infer_time: float,
                     n_train: int, n_val: int, n_test: int,
-                    smoke_test: bool = False) -> dict:
-    """Seed, donanım, hiperparametre ve süre bilgilerini topla."""
-    gpu_name  = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A"
-    cuda_ver  = torch.version.cuda or "N/A"
+                    output_dir: Path, smoke_test: bool = False) -> dict:
+    gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A"
+    cuda_ver = torch.version.cuda or "N/A"
     return {
-        "model_name":          model_name,
-        "timestamp":           datetime.now().isoformat(),
-        "smoke_test":          smoke_test,
-        "seed":                p2.get("seed", cfg.get("seed", 42)),
-        "device":              str(device),
-        "gpu_name":            gpu_name,
-        "torch_version":       torch.__version__,
-        "cuda_version":        cuda_ver,
-        "python_version":      platform.python_version(),
-        "augmentation":        p2.get("augmentation", True),
-        "pretrained":          p2.get("pretrained", True),
-        "freeze_backbone":     p2.get("freeze_backbone", False),
-        "hyperparameters":     {k: v for k, v in p2.items() if k != "models"},
-        "train_size":          n_train,
-        "val_size":            n_val,
-        "test_size":           n_test,
-        "train_time_sec":      round(train_time, 2),
-        "inference_time_sec":  round(infer_time, 2),
+        "model_name":         model_name,
+        "timestamp":          datetime.now().isoformat(),
+        "smoke_test":         smoke_test,
+        "output_dir":         str(output_dir.resolve()),
+        "seed":               p2.get("seed", cfg.get("seed", 42)),
+        "device":             str(device),
+        "gpu_name":           gpu_name,
+        "torch_version":      torch.__version__,
+        "cuda_version":       cuda_ver,
+        "python_version":     platform.python_version(),
+        "augmentation":       p2.get("augmentation", True),
+        "pretrained":         p2.get("pretrained", True),
+        "freeze_backbone":    p2.get("freeze_backbone", False),
+        "hyperparameters":    {k: v for k, v in p2.items() if k != "models"},
+        "train_size":         n_train,
+        "val_size":           n_val,
+        "test_size":          n_test,
+        "train_time_sec":     round(train_time, 2),
+        "inference_time_sec": round(infer_time, 2),
     }
 
 
@@ -172,14 +230,13 @@ def _build_run_info(model_name: str, cfg: dict, p2: dict, device: torch.device,
 def _get_features(model_name: str, split: str, df: pd.DataFrame,
                   cfg: dict, feat_dir: Path, use_cache: bool):
     """
-    Özellik matrisini döndür; cache varsa yükle, yoksa üret ve kaydet.
-
-    Çıktı: (X: np.ndarray float32, y: list[int], ids: list[str])
+    Özellik matrisini döndür; cache varsa yükle, yoksa üret + kaydet.
+    Çıktı: (X float32, y: list[int], ids: list[str])
     """
     cache_path = feat_dir / f"{model_name}_{split}.npz"
 
     if use_cache and cache_path.exists():
-        log.info("Cache yükleniyor: %s", cache_path)
+        log.info("Cache yukleniyor: %s", cache_path)
         d = np.load(cache_path, allow_pickle=True)
         return d["X"], d["y"].tolist(), d["ids"].tolist()
 
@@ -187,7 +244,7 @@ def _get_features(model_name: str, split: str, df: pd.DataFrame,
     labels = df["label"].tolist()
     ids    = [Path(p).stem for p in paths]
 
-    log.info("%s/%s: %d görüntüden özellik çıkarılıyor…", model_name, split, len(paths))
+    log.info("%s/%s: %d goruntuden ozellik cikariliyor...", model_name, split, len(paths))
     p2       = cfg.get("phase2", {})
     img_size = p2.get("image_size", 128)
 
@@ -215,19 +272,20 @@ def _get_features(model_name: str, split: str, df: pd.DataFrame,
 # Klasik model eğitimi
 # ---------------------------------------------------------------------------
 
-def train_classical(model_name: str, cfg: dict, smoke_test: bool = False) -> None:
+def train_classical(model_name: str, cfg: dict, output_dir: Path,
+                    smoke_test: bool = False) -> None:
     """
     Klasik model eğitim + test değerlendirme pipeline'ı.
 
-    Girdi : model_name ('baseline' | 'classical_ml'), cfg (tüm config), smoke_test
+    Girdi : model_name, cfg, output_dir (tüm çıktılar buraya), smoke_test
     """
-    p2      = cfg["phase2"]
-    seed    = p2["seed"]
+    p2   = cfg["phase2"]
+    seed = p2["seed"]
     _set_seed(seed)
 
     proc_dir_real = Path(cfg["paths"]["data_processed"])
-    exp_dir       = Path(cfg["paths"]["experiments"]) / model_name
-    feat_dir      = Path(cfg["paths"]["experiments"]) / "features"
+    exp_dir       = output_dir / model_name
+    feat_dir      = output_dir / "features"
     exp_dir.mkdir(parents=True, exist_ok=True)
 
     with _SmokeContext(proc_dir_real) as proc_dir:
@@ -242,16 +300,13 @@ def train_classical(model_name: str, cfg: dict, smoke_test: bool = False) -> Non
 
         use_cache = p2.get("use_cached_features", True) and not smoke_test
 
-        X_train, y_train, _       = _get_features(model_name, "train", train_df, cfg, feat_dir, use_cache)
-        _,       _,       _       = _get_features(model_name, "val",   val_df,   cfg, feat_dir, use_cache)
+        X_train, y_train, _        = _get_features(model_name, "train", train_df, cfg, feat_dir, use_cache)
+        _,       _,       _        = _get_features(model_name, "val",   val_df,   cfg, feat_dir, use_cache)
         X_test,  y_test,  ids_test = _get_features(model_name, "test",  test_df,  cfg, feat_dir, use_cache)
 
-        if model_name == "baseline":
-            clf = BaselineClassifier(cfg)
-        else:
-            clf = ClassicalMLClassifier(cfg)
+        clf = BaselineClassifier(cfg) if model_name == "baseline" else ClassicalMLClassifier(cfg)
 
-        log.info("=== %s eğitimi başlıyor ===", model_name)
+        log.info("=== %s egitimi basliyor ===", model_name)
         t0 = time.time()
         clf.fit_from_X(X_train, y_train)
         train_time = time.time() - t0
@@ -273,13 +328,15 @@ def train_classical(model_name: str, cfg: dict, smoke_test: bool = False) -> Non
     device = torch.device("cpu")
     run_info = _build_run_info(
         model_name, cfg, p2, device, train_time, infer_time,
-        len(train_df), len(val_df), len(test_df), smoke_test,
+        len(train_df), len(val_df), len(test_df), output_dir, smoke_test,
     )
     save_run_info(run_info, exp_dir)
 
-    log.info("=== %s TAMAMLANDI — F1=%.4f  AUC=%.4f  Acc=%.4f  Süre=%.0fs ===",
+    log.info("=== %s TAMAMLANDI — F1=%.4f  AUC=%.4f  Acc=%.4f  Sure=%.0fs ===",
              model_name, metrics["f1"], metrics["roc_auc"],
              metrics["accuracy"], train_time)
+
+    verify_outputs(model_name, exp_dir, is_deep=False)
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +344,6 @@ def train_classical(model_name: str, cfg: dict, smoke_test: bool = False) -> Non
 # ---------------------------------------------------------------------------
 
 def _train_epoch(model, loader, criterion, optimizer, scaler, device) -> float:
-    """Tek eğitim epoch'u; ortalama loss döndür."""
     model.train()
     total_loss = 0.0
     for imgs, labels in loader:
@@ -310,10 +366,7 @@ def _train_epoch(model, loader, criterion, optimizer, scaler, device) -> float:
 
 
 def _eval_epoch(model, loader, criterion, device):
-    """
-    Değerlendirme epoch'u.
-    Döndürür: (avg_loss, f1, y_true_list, y_pred_list, y_proba_list)
-    """
+    """Döndürür: (avg_loss, f1, y_true, y_pred, y_proba)"""
     model.eval()
     total_loss = 0.0
     y_true_all, y_pred_all, y_proba_all = [], [], []
@@ -334,12 +387,11 @@ def _eval_epoch(model, loader, criterion, device):
 
 
 def _plot_history(hist_df: pd.DataFrame, save_path: Path) -> None:
-    """Eğitim loss ve val F1 eğrilerini kaydet."""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
     ax1.plot(hist_df["epoch"], hist_df["train_loss"], label="train loss")
     ax1.plot(hist_df["epoch"], hist_df["val_loss"],   label="val loss")
     ax1.set_xlabel("Epoch"); ax1.set_ylabel("Loss")
-    ax1.set_title("Kayıp Eğrisi"); ax1.legend()
+    ax1.set_title("Kayip Egrisi"); ax1.legend()
 
     ax2.plot(hist_df["epoch"], hist_df["val_f1"], color="green", label="val F1")
     ax2.set_xlabel("Epoch"); ax2.set_ylabel("F1")
@@ -351,11 +403,12 @@ def _plot_history(hist_df: pd.DataFrame, save_path: Path) -> None:
     plt.close(fig)
 
 
-def train_deep(model_name: str, cfg: dict, smoke_test: bool = False) -> None:
+def train_deep(model_name: str, cfg: dict, output_dir: Path,
+               smoke_test: bool = False) -> None:
     """
     Derin model eğitim + test değerlendirme pipeline'ı.
 
-    Girdi : model_name ('alexnet' | 'vgg16' | 'resnet50'), cfg, smoke_test
+    Girdi : model_name ('alexnet' | 'vgg16' | 'resnet50'), cfg, output_dir, smoke_test
     """
     p2   = cfg["phase2"]
     seed = p2["seed"]
@@ -365,10 +418,9 @@ def train_deep(model_name: str, cfg: dict, smoke_test: bool = False) -> None:
                           ("cuda" if torch.cuda.is_available() else "cpu"))
 
     proc_dir_real = Path(cfg["paths"]["data_processed"])
-    exp_dir       = Path(cfg["paths"]["experiments"]) / model_name
+    exp_dir       = output_dir / model_name
     exp_dir.mkdir(parents=True, exist_ok=True)
 
-    # Model variant seçimi
     if model_name == "vgg16":
         variant = p2.get("vgg_variant", "vgg16")
     elif model_name == "resnet50":
@@ -376,15 +428,13 @@ def train_deep(model_name: str, cfg: dict, smoke_test: bool = False) -> None:
     else:
         variant = model_name
 
-    log.info("=== %s (%s) eğitimi başlıyor — cihaz: %s ===",
-             model_name, variant, device)
+    log.info("=== %s (%s) egitimi basliyor — cihaz: %s ===", model_name, variant, device)
 
     model = build_model(variant, cfg)
     if not p2.get("freeze_backbone", False):
         unfreeze_all(model)
     model = model.to(device)
 
-    # Transform ayarları
     image_size = p2["image_size"]
     aug_cfg    = dict(cfg["augmentation"])
     aug_cfg["enabled"] = p2.get("augmentation", True)
@@ -400,9 +450,8 @@ def train_deep(model_name: str, cfg: dict, smoke_test: bool = False) -> None:
         val_df   = pd.read_csv(proc_dir / "val.csv")
         test_df  = pd.read_csv(proc_dir / "test.csv")
 
-        train_tf = get_transforms(cfg_tf, "train", augment=augment)
-        val_tf   = get_transforms(cfg_tf, "val")
-
+        train_tf      = get_transforms(cfg_tf, "train", augment=augment)
+        val_tf        = get_transforms(cfg_tf, "val")
         train_ds_full = ALLDataset(proc_dir / "train.csv", transform=train_tf)
         val_ds_full   = ALLDataset(proc_dir / "val.csv",   transform=val_tf)
         test_ds_full  = ALLDataset(proc_dir / "test.csv",  transform=val_tf)
@@ -427,25 +476,20 @@ def train_deep(model_name: str, cfg: dict, smoke_test: bool = False) -> None:
         test_loader  = DataLoader(test_ds,  batch_size=bs, shuffle=False,
                                   num_workers=nw, pin_memory=(nw > 0))
 
-        # Sınıf ağırlıkları
         cw   = _class_weights(train_df["label"].values)
         crit = nn.CrossEntropyLoss(
             weight=torch.tensor(cw, dtype=torch.float32).to(device)
         )
-
-        # Optimizer + scheduler
         opt   = optim.Adam(
             filter(lambda p: p.requires_grad, model.parameters()),
             lr=p2["learning_rate"], weight_decay=p2["weight_decay"],
         )
-        sched = optim.lr_scheduler.ReduceLROnPlateau(
-            opt, mode="max", patience=3, factor=0.5
-        )
+        sched = optim.lr_scheduler.ReduceLROnPlateau(opt, mode="max", patience=3, factor=0.5)
 
         use_amp = p2.get("use_amp", True) and device.type == "cuda"
         scaler  = torch.cuda.amp.GradScaler() if use_amp else None
 
-        epochs  = 1 if smoke_test else p2["epochs"]
+        epochs       = 1 if smoke_test else p2["epochs"]
         patience_max = p2["early_stopping_patience"]
         best_f1, patience_cnt = -1.0, 0
         history = []
@@ -453,7 +497,6 @@ def train_deep(model_name: str, cfg: dict, smoke_test: bool = False) -> None:
         weights_best = exp_dir / "weights.pth"
         weights_last = exp_dir / "weights_last.pth"
 
-        # --- Eğitim döngüsü ---
         t_train_start = time.time()
         for epoch in range(1, epochs + 1):
             tr_loss = _train_epoch(model, train_loader, crit, opt, scaler, device)
@@ -479,12 +522,10 @@ def train_deep(model_name: str, cfg: dict, smoke_test: bool = False) -> None:
         torch.save(model.state_dict(), weights_last)
         train_time = time.time() - t_train_start
 
-        # Eğitim geçmişini kaydet
         hist_df = pd.DataFrame(history)
         hist_df.to_csv(exp_dir / "training_history.csv", index=False)
         _plot_history(hist_df, exp_dir / "training_history.png")
 
-        # En iyi ağırlıkla test değerlendirmesi (yoksa son epoch ağırlığını kullan)
         load_path = weights_best if weights_best.exists() else weights_last
         model.load_state_dict(torch.load(load_path, map_location=device))
 
@@ -494,7 +535,6 @@ def train_deep(model_name: str, cfg: dict, smoke_test: bool = False) -> None:
 
         ids = [Path(p).stem for p in test_df["filepath"].tolist()[:len(y_true)]]
 
-    # Metrik ve dosyaları kaydet
     metrics = compute_metrics(y_true, y_pred, y_proba)
     save_metrics(metrics, exp_dir)
     save_predictions(ids, y_true, y_pred, y_proba, exp_dir)
@@ -504,13 +544,15 @@ def train_deep(model_name: str, cfg: dict, smoke_test: bool = False) -> None:
 
     run_info = _build_run_info(
         model_name, cfg, p2, device, train_time, infer_time,
-        len(train_df), len(val_df), len(test_df), smoke_test,
+        len(train_df), len(val_df), len(test_df), output_dir, smoke_test,
     )
     save_run_info(run_info, exp_dir)
 
-    log.info("=== %s TAMAMLANDI — F1=%.4f  AUC=%.4f  Acc=%.4f  Süre=%.0fs ===",
+    log.info("=== %s TAMAMLANDI — F1=%.4f  AUC=%.4f  Acc=%.4f  Sure=%.0fs ===",
              model_name, metrics["f1"], metrics["roc_auc"],
              metrics["accuracy"], train_time)
+
+    verify_outputs(model_name, exp_dir, is_deep=True)
 
 
 # ---------------------------------------------------------------------------
@@ -519,40 +561,52 @@ def train_deep(model_name: str, cfg: dict, smoke_test: bool = False) -> None:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="ALL Detection — model eğitim + değerlendirme"
+        description="ALL Detection — model egitim + degerlendirme"
     )
     p.add_argument(
         "--model", required=True,
         help="baseline | classical_ml | alexnet | vgg16 | resnet50 | all",
     )
-    p.add_argument("--config",     default="config.yaml")
-    p.add_argument("--smoke-test", action="store_true",
-                   help="Küçük sentetik veriyle pipeline doğrulaması (CPU, 1 epoch)")
+    p.add_argument("--config",      default="config.yaml",
+                   help="Config YAML yolu (varsayilan: config.yaml)")
+    p.add_argument("--output-dir",  default=None,
+                   help="Cikti kok dizini; config.phase2.output_dir'i ezer. "
+                        "Ornek: /content/drive/MyDrive/all-exp")
+    p.add_argument("--skip-if-done", action="store_true",
+                   help="metrics.json zaten varsa o modeli atla")
+    p.add_argument("--smoke-test",  action="store_true",
+                   help="Kucuk sentetik veriyle pipeline dogrulamasi (CPU, 1 epoch)")
     return p.parse_args()
 
 
 def main() -> None:
-    args = parse_args()
-    cfg  = load_config(args.config)
-    p2   = cfg["phase2"]
+    args       = parse_args()
+    cfg        = load_config(args.config)
+    p2         = cfg["phase2"]
+    output_dir = resolve_output_dir(args.output_dir, cfg)
 
     if args.model == "all":
         models = p2.get("models", ["baseline", "classical_ml", "alexnet", "vgg16", "resnet50"])
     else:
         models = [args.model]
 
-    log.info("Eğitilecek modeller: %s  smoke_test=%s", models, args.smoke_test)
+    log.info("Cikti dizini: %s", output_dir.resolve())
+    log.info("Egitilecek modeller: %s  smoke_test=%s", models, args.smoke_test)
 
     t_total = time.time()
     for m in models:
-        if m in CLASSICAL:
-            train_classical(m, cfg, smoke_test=args.smoke_test)
-        elif m in DEEP:
-            train_deep(m, cfg, smoke_test=args.smoke_test)
-        else:
-            raise ValueError(f"Bilinmeyen model: '{m}'. Seçenekler: {sorted(CLASSICAL | DEEP)}")
+        if args.skip_if_done and (output_dir / m / "metrics.json").exists():
+            log.info("ATLANDI (--skip-if-done): %s  — metrics.json mevcut.", m)
+            continue
 
-    log.info("Toplam süre: %.1f dakika", (time.time() - t_total) / 60)
+        if m in CLASSICAL:
+            train_classical(m, cfg, output_dir, smoke_test=args.smoke_test)
+        elif m in DEEP:
+            train_deep(m, cfg, output_dir, smoke_test=args.smoke_test)
+        else:
+            raise ValueError(f"Bilinmeyen model: '{m}'. Secenekler: {sorted(CLASSICAL | DEEP)}")
+
+    log.info("Toplam sure: %.1f dakika", (time.time() - t_total) / 60)
 
 
 if __name__ == "__main__":
