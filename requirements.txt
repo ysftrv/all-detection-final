@@ -1,34 +1,29 @@
-# ALL Detection Project — Python dependencies
-# Pinned for Google Colab (Python 3.12) + numpy<2.0 ABI compatibility
+# Colab uyumlu — numpy 2.x ile çalışır; torch/torchvision Colab ortamından gelir, burada kurulmaz.
 # Install: pip install -r requirements.txt
-# GPU note: for CUDA support replace the torch lines with:
-#   pip install torch==2.3.1+cu121 torchvision==0.18.1+cu121 --extra-index-url https://download.pytorch.org/whl/cu121
+# Not: torch ve torchvision Colab'da önceden kurulu gelir (CUDA destekli).
+#      Bu dosyada sadece Colab'ın sağlamadığı ya da güncellenmesi gereken paketler var.
 
-# Numerical base — pinned to 1.26.x to avoid numpy 2.x ABI mismatch
-numpy==1.26.4
+# Scientific computing
+scipy>=1.10.0
 
-# Deep learning — torch+torchvision must be updated together; Colab CUDA 12.x compatible
-torch==2.3.1
-torchvision==0.18.1
-
-# Scientific computing — compiled against numpy 1.x (released before numpy 2.0, June 2024)
-scipy==1.13.1
-
-# Classical ML & image processing — all wheels predate numpy 2.0 release
-scikit-learn==1.5.0
-scikit-image==0.23.0
-opencv-python==4.9.0.80
+# Classical ML & image processing
+scikit-learn>=1.2.0
+scikit-image>=0.20.0
+opencv-python-headless>=4.7.0
 
 # Data
-pandas==2.2.2
+pandas>=2.0.0
 
 # Visualisation
-matplotlib==3.9.0
-seaborn==0.13.2
+matplotlib>=3.6.0
+seaborn>=0.12.0
+
+# Model kaydetme (scikit-learn ile gelir ama doğrudan kullanıyoruz)
+joblib>=1.2.0
 
 # Configuration & utilities
-pyyaml==6.0.1
-tqdm==4.66.4
+pyyaml>=6.0
+tqdm>=4.64.0
 
 # Dataset download
-kaggle==1.6.14
+kaggle>=1.5.0
