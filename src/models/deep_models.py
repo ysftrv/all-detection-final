@@ -1,60 +1,101 @@
 """
-deep_models.py — Katman 3: Transfer öğrenme ile derin sinir ağı modelleri.
+deep_models.py — AlexNet, VGG16, ResNet50 transfer öğrenme modelleri.
 
-Desteklenen mimariler (hepsi ImageNet ön-eğitimli):
-    - AlexNet  (torchvision.models.alexnet)
-    - VGG-16   (torchvision.models.vgg16)
-    - ResNet-50 (torchvision.models.resnet50)
-
-Strateji:
-    - Önceden eğitilmiş ağırlıkları dondur (freeze), yalnızca son tam-bağlantı
-      katmanını 2-sınıflı çıkışa göre değiştir.
-    - İsteğe bağlı fine-tuning: son N bloğu çöz.
+Son katman 2 çıkışlı Linear ile değiştirilir:
+    AlexNet  → classifier[6]   (in=4096)
+    VGG16/BN → classifier[6]   (in=4096)
+    ResNet50 → fc              (in=2048)
+    ResNet18 → fc              (in=512)
 
 Dışa aktarılanlar:
-    build_model(name, config)  : model oluştur ve son katmanı uyarla
-    freeze_backbone(model)     : conv katmanlarını dondur
-    unfreeze_last_n(model, n)  : fine-tuning için son n bloğu aç
+    SUPPORTED_MODELS     : desteklenen mimari adları listesi
+    build_model(name, config)   → nn.Module (son katmanı uyarlanmış)
+    freeze_backbone(model)      : backbone dondur, son katman aç
+    unfreeze_all(model)         : tüm parametreleri aç
 """
 
 import torch.nn as nn
+import torchvision.models as tvm
+from torchvision.models import (
+    AlexNet_Weights,
+    ResNet18_Weights,
+    ResNet50_Weights,
+    VGG16_BN_Weights,
+    VGG16_Weights,
+)
 
-# TODO (Faz 4):
-#   build_model(name, config):
-#     - torchvision.models'dan pretrained=True ile modeli yükle.
-#     - Son katmanı 2 çıkışlı Linear ile değiştir (AlexNet → classifier[-1],
-#       VGG → classifier[-1], ResNet → fc).
-#     - freeze_backbone() çağır.
-#     - Modeli döndür.
-#
-#   freeze_backbone(model):
-#     - model.parameters() döngüsünde requires_grad=False.
-#     - Son katman parametrelerini requires_grad=True olarak geri aç.
-#
-#   unfreeze_last_n(model, n):
-#     - ResNet için layer4, layer3... sırasıyla; VGG için features[-n:]
-#       gibi mimari-özel mantık gerekir.
-#
-#   Kayıt / yükleme:
-#     - torch.save(model.state_dict(), path)  /  model.load_state_dict(...)
-#     - Path şeması: experiments/weights/{model_name}_{aug_flag}.pth
-
-
-SUPPORTED_MODELS = ["alexnet", "vgg16", "resnet50"]
+SUPPORTED_MODELS = ["alexnet", "vgg16", "vgg16_bn", "resnet50", "resnet18"]
 
 
 def build_model(name: str, config=None) -> nn.Module:
-    """name: 'alexnet' | 'vgg16' | 'resnet50'. Döndürür: son katmanı uyarlanmış nn.Module."""
+    """
+    İstenen mimariyi yükle; son sınıflandırma katmanını 2 çıkışlı yap.
+
+    config.phase2.pretrained      : True → ImageNet; False → sıfırdan
+    config.phase2.freeze_backbone : True → backbone dondur (yalnızca head eğitilir)
+
+    Girdi : name — SUPPORTED_MODELS içinden biri
+    Çıktı : nn.Module
+    """
+    cfg = (config or {}).get("phase2", {})
+    pretrained = cfg.get("pretrained", True)
+    freeze_bb  = cfg.get("freeze_backbone", False)
+
+    name = name.lower()
     if name not in SUPPORTED_MODELS:
-        raise ValueError(f"Desteklenmeyen model: {name}. Seçenekler: {SUPPORTED_MODELS}")
-    raise NotImplementedError(f"TODO (Faz 4): build_model('{name}') implemente edilmedi.")
+        raise ValueError(f"Desteklenmeyen model: '{name}'. Seçenekler: {SUPPORTED_MODELS}")
+
+    if name == "alexnet":
+        weights = AlexNet_Weights.DEFAULT if pretrained else None
+        model   = tvm.alexnet(weights=weights)
+        in_f    = model.classifier[6].in_features
+        model.classifier[6] = nn.Linear(in_f, 2)
+
+    elif name == "vgg16":
+        weights = VGG16_Weights.DEFAULT if pretrained else None
+        model   = tvm.vgg16(weights=weights)
+        in_f    = model.classifier[6].in_features
+        model.classifier[6] = nn.Linear(in_f, 2)
+
+    elif name == "vgg16_bn":
+        weights = VGG16_BN_Weights.DEFAULT if pretrained else None
+        model   = tvm.vgg16_bn(weights=weights)
+        in_f    = model.classifier[6].in_features
+        model.classifier[6] = nn.Linear(in_f, 2)
+
+    elif name == "resnet50":
+        weights = ResNet50_Weights.DEFAULT if pretrained else None
+        model   = tvm.resnet50(weights=weights)
+        in_f    = model.fc.in_features
+        model.fc = nn.Linear(in_f, 2)
+
+    elif name == "resnet18":
+        weights = ResNet18_Weights.DEFAULT if pretrained else None
+        model   = tvm.resnet18(weights=weights)
+        in_f    = model.fc.in_features
+        model.fc = nn.Linear(in_f, 2)
+
+    if freeze_bb:
+        freeze_backbone(model)
+
+    return model
 
 
 def freeze_backbone(model: nn.Module) -> None:
-    """Tüm parametreleri dondur, son sınıflandırma katmanını aç."""
-    raise NotImplementedError("TODO (Faz 4): freeze_backbone implemente edilmedi.")
+    """Tüm parametreleri dondur; ardından son sınıflandırma katmanını yeniden aç."""
+    for p in model.parameters():
+        p.requires_grad = False
+
+    # ResNet: fc; AlexNet/VGG: classifier'ın son elemanı
+    if hasattr(model, "fc"):
+        for p in model.fc.parameters():
+            p.requires_grad = True
+    elif hasattr(model, "classifier"):
+        for p in model.classifier[-1].parameters():
+            p.requires_grad = True
 
 
-def unfreeze_last_n(model: nn.Module, n: int) -> None:
-    """Fine-tuning: son n bloğun gradyanını aç."""
-    raise NotImplementedError("TODO (Faz 4): unfreeze_last_n implemente edilmedi.")
+def unfreeze_all(model: nn.Module) -> None:
+    """Tüm parametreleri eğitime aç (tam fine-tuning)."""
+    for p in model.parameters():
+        p.requires_grad = True
