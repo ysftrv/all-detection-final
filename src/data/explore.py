@@ -28,18 +28,23 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 def parse_patient_id(stem: str) -> str:
     """
-    C-NMC dosya adından hasta ID'sini çıkar.
+    C-NMC dosya adından GERÇEK hasta ID'sini çıkar.
 
-    Format: {UID}_{frameNo}_{cellNo}   örn. UID_H1_1_3  →  UID_H1
-    Kural:  son iki alt çizgi bölümü (frame + cell numarası) atılır;
-            geri kalanı patient_id sayılır.
+    Format: UID_<hasta_no>_<hücre_no>_...
+    Örnek:  UID_11_29_1_all → UID_11  (11 = hasta no, 29 = hücre/örnek no)
 
-    Eğer dosya adında 3'ten az bölüm varsa tamamı hasta ID'si kabul edilir.
+    Kural: Yalnızca ilk iki alt çizgi bölümü (UID öneki + hasta numarası) alınır.
     """
     parts = stem.split("_")
-    if len(parts) >= 3:
-        return "_".join(parts[:-2])
-    return "_".join(parts[:-1]) if len(parts) == 2 else stem
+    if len(parts) >= 2:
+        return parts[0] + "_" + parts[1]
+    return stem
+
+
+def parse_sample_id(stem: str) -> str:
+    """Hücre/örnek numarasını çıkar: UID_11_29_... → 29"""
+    parts = stem.split("_")
+    return parts[2] if len(parts) >= 3 else ""
 
 
 def scan_dataset(raw_dir: Path) -> pd.DataFrame:
@@ -84,6 +89,7 @@ def scan_dataset(raw_dir: Path) -> pd.DataFrame:
                     "class_name": cls_name,
                     "fold": fold_name,
                     "patient_id": patient_id,
+                    "sample_id": parse_sample_id(img_path.stem),
                 })
 
     if not records:

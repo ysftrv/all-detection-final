@@ -23,8 +23,8 @@ dataset:
   image_size: 224          # Transfer learning modelleri için (AlexNet/VGG/ResNet girişi)
   val_split: 0.15          # Test çıkarıldıktan sonraki verinin val oranı
   test_split: 0.15         # Tüm verinin test oranı (hasta-bazlı ayrılır)
-  # Hasta ID parse kuralı: dosya adı stem'inden son 2 alt çizgi bölümü atılır.
-  # Örn: UID_H1_1_3 → UID_H1  |  Uygulayan: src/data/explore.py::parse_patient_id()
+  # Hasta ID parse kuralı: dosya adı stem'inden ilk 2 bölüm alınır (UID + hasta no).
+  # Örn: UID_11_29_1_all → UID_11  |  Uygulayan: src/data/explore.py::parse_patient_id()
   patient_id_field: "filename_prefix"
 
 # --- Training ---
