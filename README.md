@@ -15,8 +15,12 @@ Bu proje üç farklı yaklaşımı karşılaştırmaktadır:
 | 2 — Klasik ML | HOG + LBP + SVM |
 | 3 — Derin Öğrenme | AlexNet / VGG-16 / ResNet-50 (transfer learning) |
 
-Değerlendirme kriterleri: Accuracy, Precision, Recall, F1 (macro), ROC-AUC.  
-Augmentation ablasyonu: her model aug=True ve aug=False ile koşturulur.
+Değerlendirme kriterleri: Accuracy, Precision, Recall, F1, Specificity, ROC-AUC.  
+Bölme stratejisi: **Hasta-bazlı (patient-disjoint)** — veri sızıntısını önlemek için
+aynı hastanın görüntüleri yalnızca tek bir parçada (train/val/test) bulunur.
+
+**En iyi sonuç:** ResNet-50 — Accuracy 0.8911, F1 0.9329, ROC-AUC 0.9029
+(hasta-bazlı test seti, 11 hasta / 964 görüntü).
 
 ---
 
@@ -26,9 +30,9 @@ Augmentation ablasyonu: her model aug=True ve aug=False ile koşturulur.
 
 - **Kaynak:** Kaggle — `andrewmvd/leukemia-classification`
 - **Sınıflar:** ALL (lösemi hücresi), HEM (normal hematopoietik hücre)
-- **Yapı:** Eğitim verisi 3 fold'a bölünmüş + ayrı test seti
-- **Bölme stratejisi:** Hasta-bazlı (data leakage'ı önlemek için)
-- **Lisans:** Araştırma ve akademik kullanım (ticari kullanım için kaynak ekibiyle iletişime geç)
+- **Boyut:** 10.661 görüntü, 73 gerçek hasta
+- **Bölme:** Hasta-bazlı %70/15/15 → train 51 / val 11 / test 11 hasta
+- **Lisans:** Araştırma ve akademik kullanım
 
 ---
 
@@ -36,7 +40,7 @@ Augmentation ablasyonu: her model aug=True ve aug=False ile koşturulur.
 
 ```bash
 # 1. Repoyu klonla
-git clone https://github.com/KULLANICI_ADI/all-detection-final.git
+git clone https://github.com/ysftrv/all-detection-final.git
 cd all-detection-final
 
 # 2. Sanal ortam oluştur (önerilen)
@@ -61,135 +65,93 @@ pip install -r requirements.txt
 
 ```bash
 # Veri setini Kaggle'dan indir
-python -m src.data.download
+PYTHONPATH=. python -m src.data.download
 
 # Veri setini keşfet (istatistikler ve örnek görüntüler)
-python -m src.data.explore
+PYTHONPATH=. python -m src.data.explore
 
-# Hasta-bazlı train/val/test bölmesi
-python -m src.data.split
+# Hasta-bazlı train/val/test bölmesi (data/processed/{train,val,test}.csv üretir)
+PYTHONPATH=. python -m src.data.split
 ```
 
-### Faz 3 — Baseline & Klasik ML Eğitimi
+### Faz 2 — Model Eğitimi
 
 ```bash
-python -m src.train --model baseline --aug false
-python -m src.train --model classical_ml --aug false
+PYTHONPATH=. python -m src.train --model baseline
+PYTHONPATH=. python -m src.train --model classical_ml
+PYTHONPATH=. python -m src.train --model alexnet
+PYTHONPATH=. python -m src.train --model vgg16
+PYTHONPATH=. python -m src.train --model resnet50
 ```
 
-### Faz 4 — Derin Öğrenme Eğitimi (Google Colab'da koştur)
+### Faz 3 — Değerlendirme
 
 ```bash
-# Colab'da:
-# notebooks/colab_runner.ipynb dosyasını açıp sırayla çalıştır
-
-# Yerel (GPU varsa):
-python -m src.train --model alexnet  --aug true
-python -m src.train --model vgg16    --aug true
-python -m src.train --model resnet50 --aug true
-```
-
-### Faz 5 — Değerlendirme & Analiz
-
-```bash
-# Tüm modelleri değerlendir
-python -m src.evaluate --model resnet50 --aug true
-
-# Karşılaştırma tablosu ve grafikleri üret
-python -m src.analysis.compare
-python -m src.analysis.ablation
-python -m src.analysis.error_analysis --model resnet50 --aug true
+PYTHONPATH=. python -m src.evaluate --model all
 ```
 
 ---
 
-## run_test.py Kullanımı
+## Değerlendirici İçin Hızlı Test (run_test.py)
 
-Kayıtlı ağırlıklarla tek komutta değerlendirme:
+Eğitilmiş modelleri tek komutla test seti üzerinde değerlendirir. **Eğitim YAPMAZ**,
+yalnızca mevcut ağırlıkları test eder.
 
 ```bash
-# Tek model
-python scripts/run_test.py --model resnet50 --aug true
+# Önce veri ve test bölmesi hazırlanmalı (bir kez):
+PYTHONPATH=. python -m src.data.download   # C-NMC 2019 indir (Kaggle API gerekir)
+PYTHONPATH=. python -m src.data.split      # hasta-bazlı test.csv üretir
 
-# Baseline
-python scripts/run_test.py --model baseline
+# Tek model:
+PYTHONPATH=. python scripts/run_test.py --model resnet50
 
-# Config.yaml'daki tüm modelleri çalıştır
-python scripts/run_test.py --all
-
-# Özel config ve cihaz
-python scripts/run_test.py --model vgg16 --aug false --config config.yaml --device cuda
+# Tüm modeller (önerilen):
+PYTHONPATH=. python scripts/run_test.py --all
 ```
 
-Çıktılar `experiments/` altına kaydedilir:
-- `weights/` — model ağırlıkları (.pth)
-- `logs/`    — eğitim logları ve run bilgisi (JSON)
-- `figures/` — karışıklık matrisi, ROC eğrisi, hata ızgaraları
-- `tables/`  — metrik CSV dosyaları, karşılaştırma tablosu
+**Argümanlar:** `--model {baseline|classical_ml|alexnet|vgg16|resnet50}`,
+`--all`, `--config <yol>`, `--device {cuda|cpu}`, `--output-dir <yol>`.
+
+**Çıkış kodları:** `0` başarı · `1` ağırlık/model dosyası yok · `2` test CSV yok.
+
+Eğitilmiş ağırlıklar derin modeller için `experiments/{model}/weights.pth`,
+klasik modeller için `experiments/{model}/model.joblib` altında bulunur. Sonuçlar
+(metrics.json, predictions.csv, confusion matrix, ROC eğrisi) her modelin
+`experiments/{model}/` klasörüne yazılır ve konsola özet tablo basılır.
 
 ---
 
-## Donanım
+## Donanım ve Hiperparametreler (Yeniden Üretilebilirlik)
 
-Eğitim Google Colab T4 GPU üzerinde koşturulmuştur.  
-Ayrıntılar için → [`docs/hardware.md`](docs/hardware.md)  
-Otomatik kaydedilen donanım bilgisi → `experiments/logs/hardware_info.json`
-
----
-
-## Sonuçlar
-
-> *Faz 5 tamamlandıktan sonra bu tablo güncellenecektir.*
-
-| Model | Aug | Accuracy | Precision | Recall | F1 | AUC |
-|-------|-----|----------|-----------|--------|-----|-----|
-| Baseline (LR) | — | — | — | — | — | — |
-| Classical ML (SVM) | — | — | — | — | — | — |
-| AlexNet | ✓ | — | — | — | — | — |
-| AlexNet | ✗ | — | — | — | — | — |
-| VGG-16 | ✓ | — | — | — | — | — |
-| VGG-16 | ✗ | — | — | — | — | — |
-| ResNet-50 | ✓ | — | — | — | — | — |
-| ResNet-50 | ✗ | — | — | — | — | — |
+- **Donanım:** NVIDIA L4 GPU (Google Colab)
+- **Optimizer:** Adam (lr = 1e-4)
+- **Batch size:** 32 · **Epoch:** 25 · **Loss:** Weighted Cross-Entropy
+- **Overfitting önlemleri:** ReduceLROnPlateau, early stopping (val F1), dropout (0.5),
+  L2 weight decay, AMP
+- Her çalıştırmanın seed, donanım ve hiperparametre kaydı `experiments/{model}/run_info.json`
+  dosyasında tutulur.
 
 ---
 
-## Proje Yapısı
+## Klasör Yapısı
 
 ```
 all-detection-final/
-├── config.yaml              # Merkezi konfigürasyon
+├── config.yaml              # merkezi yapılandırma
 ├── requirements.txt
 ├── README.md
-├── .gitignore
-├── data/
-│   ├── raw/                 # Ham veri (git'e dahil edilmez)
-│   └── processed/           # train/val/test CSV'leri
 ├── src/
-│   ├── data/
-│   │   ├── download.py      # Kaggle indirme
-│   │   ├── explore.py       # EDA
-│   │   ├── split.py         # Hasta-bazlı bölme
-│   │   └── dataset.py       # PyTorch Dataset + transforms
-│   ├── models/
-│   │   ├── baseline.py      # Otsu + LR
-│   │   ├── classical_ml.py  # HOG/LBP + SVM
-│   │   └── deep_models.py   # AlexNet / VGG / ResNet
-│   ├── train.py             # Eğitim döngüsü
-│   ├── evaluate.py          # Metrik hesaplama
-│   └── analysis/
-│       ├── compare.py       # Model karşılaştırma tablosu
-│       ├── ablation.py      # Augmentation ablasyonu
-│       └── error_analysis.py# Hata görselleştirme
+│   ├── data/                # download, explore, split, dataset
+│   ├── models/              # baseline, classical_ml, deep_models
+│   ├── analysis/            # compare, ablation, error_analysis
+│   ├── utils/               # config, metrics
+│   ├── train.py
+│   └── evaluate.py
 ├── scripts/
-│   └── run_test.py          # Tek komutla test
+│   └── run_test.py          # tek komutla test
+├── experiments/             # her model: metrics.json, predictions.csv, weights, run_info
 ├── notebooks/
-│   └── colab_runner.ipynb   # Google Colab eğitim notebook'u
-├── experiments/
-│   ├── weights/             # Model ağırlıkları (git'e dahil edilmez)
-│   ├── logs/                # Eğitim logları
-│   ├── figures/             # Görseller
-│   └── tables/              # Metrik CSV'leri
+│   └── colab_runner.ipynb
 └── docs/
-    └── hardware.md          # Donanım kaydı
+    └── hardware.md
 ```
